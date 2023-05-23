@@ -1,6 +1,3 @@
-[submodule "git-re-basin"]
-	path = git-re-basin
-	url = https://github.com/samuela/git-re-basin.git
 [submodule "lottery-ticket-hypothesis"]
 	path = lottery-ticket-hypothesis
 	url = https://github.com/rahulvigneswaran/Lottery-Ticket-Hypothesis-in-Pytorch.git
