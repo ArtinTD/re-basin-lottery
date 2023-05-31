@@ -1,3 +1,0 @@
-[submodule "lottery-ticket-hypothesis"]
-	path = lottery-ticket-hypothesis
-	url = https://github.com/rahulvigneswaran/Lottery-Ticket-Hypothesis-in-Pytorch.git
