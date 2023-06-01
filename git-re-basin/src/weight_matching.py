@@ -9,7 +9,7 @@ from scipy.optimize import linear_sum_assignment
 
 from utils import rngmix
 
-epsilon = 1e-12
+epsilon = 1e-6
 
 class PermutationSpec(NamedTuple):
   perm_to_axes: dict
@@ -275,7 +275,9 @@ def weight_matching(rng,
         w_b = jnp.moveaxis(w_b, axis, 0).reshape((n, -1))
         A += w_a @ w_b.T
 
+      # print(jnp.min(A))
       A = relu(A)
+      print(jnp.min(A))
       ri, ci = linear_sum_assignment(A, maximize=True)
       assert (ri == jnp.arange(len(ri))).all()
 
@@ -285,8 +287,8 @@ def weight_matching(rng,
       progress = progress or newL > oldL + 1e-12
 
       perm[p] = jnp.array(ci)
-      print(A[0, ci[0]], ci[0])
-      scale[p] = jnp.array([epsilon if A[i, ci[i]] <= 0 else 1 for i in range(n)])
+      print("!!", len([A[i, ci[i]] for i in range(n)]), min([A[i, ci[i]] for i in range(n)]))
+      scale[p] = jnp.array([1./epsilon if A[i, ci[i]] <= 1e-5 else 1 for i in range(n)])
 
     if not progress:
       break
