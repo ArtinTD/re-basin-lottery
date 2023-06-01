@@ -9,7 +9,7 @@ from scipy.optimize import linear_sum_assignment
 
 from utils import rngmix
 
-epsilon = 1e-3
+epsilon = 1e-12
 
 class PermutationSpec(NamedTuple):
   perm_to_axes: dict
@@ -40,6 +40,7 @@ def permutation_spec_from_axes_to_perm(axes_to_perm: dict) -> PermutationSpec:
       if perm is not None:
         perm_to_axes[perm].append((wk, axis))
   return PermutationSpec(perm_to_axes=dict(perm_to_axes), axes_to_perm=axes_to_perm)
+
 
 def mlp_permutation_spec(num_hidden_layers: int) -> PermutationSpec:
   """We assume that one permutation cannot appear in two axes of the same weight array."""
@@ -200,10 +201,11 @@ def get_scaled_permuted_param(ps: PermutationSpec, perm, scale, key: str, params
     # None indicates that there is no permutation relevant to that axis.
     if p is not None:
       w = jnp.take(w, perm[p], axis=axis)
+      w = jnp.squeeze(w)
       if axis == 1:
-        w = np.multiply(scale[p], w[:, np.newaxis])
+          w = scale[p].flatten() * w
       else:
-        w = np.multiply(scale[p], w[np.newaxis, :])
+        w = (w.T * scale[p]).T
 
   return w
 
@@ -215,6 +217,7 @@ def apply_permutation(ps: PermutationSpec, final_permutation, model_params):
  
 def apply_scaled_permutation(ps: PermutationSpec, final_permutation, final_scale, model_params):
   """Apply a `perm` to `params`."""
+  print(final_scale)
   return {key: get_scaled_permuted_param(ps, final_permutation, final_scale, key, model_params) for key in model_params.keys()}
 
 def weight_matching(rng,
@@ -282,7 +285,8 @@ def weight_matching(rng,
       progress = progress or newL > oldL + 1e-12
 
       perm[p] = jnp.array(ci)
-      scale[p] = jnp.array([epsilon if A[ci[i], i] <= 0 else 1 for i in range(n)])
+      print(A[0, ci[0]], ci[0])
+      scale[p] = jnp.array([epsilon if A[i, ci[i]] <= 0 else 1 for i in range(n)])
 
     if not progress:
       break
