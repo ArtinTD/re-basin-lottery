@@ -96,24 +96,26 @@ def load_datasets():
 def main():
   parser = argparse.ArgumentParser()
   parser.add_argument("--test", action="store_true", help="Run in smoke-test mode")
-  parser.add_argument("--seed", type=int, default=0, help="Random seed")
+  parser.add_argument("--seed", type=int, default=4, help="Random seed")
   parser.add_argument("--optimizer", choices=["sgd", "adam", "adamw"], required=True)
   parser.add_argument("--learning-rate", type=float, required=True)
-  parser.add_argument("--wandb-entity", type=str, required=True)
-  parser.add_argument("--wandb-project", type=str, required=True)
+  parser.add_argument("--wandb-entity", type=str, required=False)
+  parser.add_argument("--wandb-project", type=str, required=False)
 
   args = parser.parse_args()
 
   with wandb.init(
-      project=args.wandb_project,
-      entity=args.wandb_entity,
+      #project=args.wandb_project,
+      #entity=args.wandb_entity,
+      project="git-rebasin",
+      entity="lottery-re-basin",
       tags=["mnist", "mlp", "training"],
       mode="disabled" if args.test else "online",
       job_type="train",
   ) as wandb_run:
     artifact = wandb.Artifact("mnist-mlp-weights", type="model-weights")
 
-    config = wandb.config
+    config = wandb.config 
     # config.ec2_instance_type = ec2_get_instance_type()
     config.test = args.test
     config.seed = args.seed

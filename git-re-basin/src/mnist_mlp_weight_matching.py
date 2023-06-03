@@ -11,7 +11,8 @@ from tqdm import tqdm
 
 from mnist_mlp_train import MLPModel, load_datasets, make_stuff
 from utils import ec2_get_instance_type, flatten_params, lerp, unflatten_params
-from weight_matching import (apply_permutation, mlp_permutation_spec, weight_matching)
+from weight_matching import (apply_permutation, apply_scaled_permutation, mlp_permutation_spec, weight_matching)
+from weight_matching_new import apply_permutation_new, weight_matching_new, normalize
 
 def plot_interp_loss(epoch, lambdas, train_loss_interp_naive, test_loss_interp_naive,
                      train_loss_interp_clever, test_loss_interp_clever):
@@ -92,19 +93,21 @@ def plot_interp_acc(epoch, lambdas, train_acc_interp_naive, test_acc_interp_naiv
   ax.legend(loc="lower right", framealpha=0.5)
   fig.tight_layout()
   return fig
-
+  
 def main():
   parser = argparse.ArgumentParser()
   parser.add_argument("--model-a", type=str, required=True)
   parser.add_argument("--model-b", type=str, required=True)
   parser.add_argument("--seed", type=int, default=0, help="Random seed")
-  parser.add_argument("--wandb-entity", type=str, required=True)
-  parser.add_argument("--wandb-project", type=str, required=True)
+  #parser.add_argument("--wandb-entity", type=str, required=True)
+  #parser.add_argument("--wandb-project", type=str, required=True)
   args = parser.parse_args()
 
   with wandb.init(
-      project=args.wandb_project,
-      entity=args.wandb_entity,
+      #project=args.wandb_project,
+      #entity=args.wandb_entity,
+      project="git-rebasin",
+      entity="lottery-re-basin",
       tags=["mnist", "mlp", "weight-matching"],
       job_type="analysis",
   ) as wandb_run:
@@ -114,6 +117,8 @@ def main():
     config.model_b = args.model_b
     config.seed = args.seed
     config.load_epoch = 99
+    
+    permutation_spec = mlp_permutation_spec(3)
 
     model = MLPModel()
     stuff = make_stuff(model)
@@ -135,8 +140,11 @@ def main():
 
     train_ds, test_ds = load_datasets()
 
-    permutation_spec = mlp_permutation_spec(3)
-    final_permutation = weight_matching(random.PRNGKey(config.seed), permutation_spec,
+    #normalize the models
+    model_a = unflatten_params(normalize(permutation_spec, flatten_params(model_a)))
+    model_b = unflatten_params(normalize(permutation_spec, flatten_params(model_b)))
+    
+    final_permutation, scale = weight_matching(random.PRNGKey(config.seed), permutation_spec,
                                         flatten_params(model_a), flatten_params(model_b))
 
     # Save final_permutation as an Artifact
@@ -167,6 +175,7 @@ def main():
 
     model_b_clever = unflatten_params(
         apply_permutation(permutation_spec, final_permutation, flatten_params(model_b)))
+        # apply_scaled_permutation(permutation_spec, final_permutation, scale, flatten_params(model_b)))
 
     train_loss_interp_clever = []
     test_loss_interp_clever = []

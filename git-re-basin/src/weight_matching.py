@@ -2,10 +2,14 @@ from collections import defaultdict
 from typing import NamedTuple
 
 import jax.numpy as jnp
+import numpy as np
 from jax import random
+from jax.nn import relu
 from scipy.optimize import linear_sum_assignment
 
 from utils import rngmix
+
+epsilon = 1e-6
 
 class PermutationSpec(NamedTuple):
   perm_to_axes: dict
@@ -36,6 +40,7 @@ def permutation_spec_from_axes_to_perm(axes_to_perm: dict) -> PermutationSpec:
       if perm is not None:
         perm_to_axes[perm].append((wk, axis))
   return PermutationSpec(perm_to_axes=dict(perm_to_axes), axes_to_perm=axes_to_perm)
+
 
 def mlp_permutation_spec(num_hidden_layers: int) -> PermutationSpec:
   """We assume that one permutation cannot appear in two axes of the same weight array."""
@@ -170,10 +175,10 @@ def resnet50_permutation_spec() -> PermutationSpec:
       **dense("dense", "P_bg4", None),
   })
 
-def get_permuted_param(ps: PermutationSpec, perm, k: str, params, except_axis=None):
+def get_permuted_param(ps: PermutationSpec, perm, key: str, params, except_axis=None):
   """Get parameter `k` from `params`, with the permutations applied."""
-  w = params[k]
-  for axis, p in enumerate(ps.axes_to_perm[k]):
+  w = params[key]
+  for axis, p in enumerate(ps.axes_to_perm[key]):
     # Skip the axis we're trying to permute.
     if axis == except_axis:
       continue
@@ -184,50 +189,105 @@ def get_permuted_param(ps: PermutationSpec, perm, k: str, params, except_axis=No
 
   return w
 
-def apply_permutation(ps: PermutationSpec, perm, params):
+def get_scaled_permuted_param(ps: PermutationSpec, perm, scale, key: str, params, except_axis=None):
+  """Get parameter `k` from `params`, with the permutations applied."""
+  w = params[key]
+  for axis, p in enumerate(ps.axes_to_perm[key]):
+    # Skip the axis we're trying to permute.
+    if axis == except_axis:
+      continue
+    w = jnp.squeeze(w)
+    # None indicates that there is no permutation relevant to that axis.
+    if p is not None:
+      w = jnp.take(w, perm[p], axis=axis)
+      if axis == 0:
+        w = scale[p][:,np.newaxis] * w
+      else:
+        w = w * scale[p][np.newaxis,:]
+
+  return w
+
+
+# 2nd and 3rd parameters are the permutation and the model parameters
+def apply_permutation(ps: PermutationSpec, final_permutation, model_params):
   """Apply a `perm` to `params`."""
-  return {k: get_permuted_param(ps, perm, k, params) for k in params.keys()}
+  return {key: get_permuted_param(ps, final_permutation, key, model_params) for key in model_params.keys()}
+ 
+def apply_scaled_permutation(ps: PermutationSpec, final_permutation, final_scale, model_params):
+  """Apply a `perm` to `params`."""
+  print(final_scale)
+  return {key: get_scaled_permuted_param(ps, final_permutation, final_scale, key, model_params) for key in model_params.keys()}
 
 def weight_matching(rng,
                     ps: PermutationSpec,
                     params_a,
                     params_b,
                     max_iter=100,
+                    use_scales=False,
                     init_perm=None,
                     silent=False):
   """Find a permutation of `params_b` to make them match `params_a`."""
+  
+  # for weight_label, weights in params_a.items():
+  #   print("weight label, weight shape: ", weight_label, weights.shape)
+    
+  # dictionary of sizes, key = "P0", "P1", "P2", value = size of layer      
   perm_sizes = {p: params_a[axes[0][0]].shape[axes[0][1]] for p, axes in ps.perm_to_axes.items()}
-
+  
+  # dictionary of permutations, key = layer label, value = permutation for the layer
   perm = {p: jnp.arange(n) for p, n in perm_sizes.items()} if init_perm is None else init_perm
+  scale = {p: jnp.ones(n) for p, n in perm_sizes.items()} 
+  
+  # list of layer labels
   perm_names = list(perm.keys())
 
   for iteration in range(max_iter):
     progress = False
     for p_ix in random.permutation(rngmix(rng, iteration), len(perm_names)):
-      p = perm_names[p_ix]
-      n = perm_sizes[p]
+      p = perm_names[p_ix] #layer label, i.e. P0, P1, P2
+      n = perm_sizes[p] #number of neurons in the layer
       A = jnp.zeros((n, n))
-      for wk, axis in ps.perm_to_axes[p]:
+      for wk, axis in ps.perm_to_axes[p]: 
+        # wk is: Dense0/kernel, Dense1/kernel, Dense0/bias, 
+        # axis is 0 or 1
         w_a = params_a[wk]
-        w_b = get_permuted_param(ps, perm, wk, params_b, except_axis=axis)
-        w_a = jnp.moveaxis(w_a, axis, 0).reshape((n, -1))
+        if use_scales:
+          w_b = get_scaled_permuted_param(ps, perm, scale, wk, params_b, except_axis=axis)
+        else:
+          w_b = get_permuted_param(ps, perm, wk, params_b, except_axis=axis)
+        
+        w_a = jnp.moveaxis(w_a, axis, 0).reshape((n, -1)) #taking a transpose if axis=1
         w_b = jnp.moveaxis(w_b, axis, 0).reshape((n, -1))
         A += w_a @ w_b.T
 
+      # print(jnp.min(A))
+      if use_scales:
+        A = relu(A)
+      print(jnp.min(A))
       ri, ci = linear_sum_assignment(A, maximize=True)
       assert (ri == jnp.arange(len(ri))).all()
 
-      oldL = jnp.vdot(A, jnp.eye(n)[perm[p]])
-      newL = jnp.vdot(A, jnp.eye(n)[ci, :])
-      if not silent: print(f"{iteration}/{p}: {newL - oldL}")
+      # new_scale = jnp.array([epsilon if A[ci[i], i] <= 0 else 1 for i in range(n)])
+      # print("!!", len([A[i, ci[i]] for i in range(n)]), min([A[i, ci[i]] for i in range(n)]))
+      new_scale = jnp.array([1./epsilon if A[i, ci[i]] <= 1e-5 else 1 for i in range(n)])
+      
+      if use_scales:
+        oldL = jnp.vdot(A, scale[p] * jnp.eye(n)[perm[p]])
+        newL = jnp.vdot(A, new_scale * jnp.eye(n)[ci, :])
+      else:
+        oldL = jnp.vdot(A, jnp.eye(n)[perm[p]])
+        newL = jnp.vdot(A, jnp.eye(n)[ci, :])
+      if not silent: print(f"old {iteration}/{p}: {newL - oldL}")
       progress = progress or newL > oldL + 1e-12
 
+      # print("sample of entry: ", A[0, ci[0]], ci[0])
+      # automatically guarantees that newL >= oldL by definition
       perm[p] = jnp.array(ci)
-
+      scale[p] = new_scale
     if not progress:
       break
 
-  return perm
+  return perm, scale
 
 def test_weight_matching():
   """If we just have a single hidden layer then it should converge after just one step."""
