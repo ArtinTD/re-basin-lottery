@@ -169,7 +169,8 @@ def main():
       test_acc_interp_naive.append(test_acc)
 
     model_b_clever = unflatten_params(
-        apply_scaled_permutation(permutation_spec, final_permutation, scale, flatten_params(model_b)))
+        apply_permutation(permutation_spec, final_permutation, flatten_params(model_b)))
+        # apply_scaled_permutation(permutation_spec, final_permutation, scale, flatten_params(model_b)))
 
     train_loss_interp_clever = []
     test_loss_interp_clever = []
