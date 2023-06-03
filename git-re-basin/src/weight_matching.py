@@ -178,7 +178,6 @@ def resnet50_permutation_spec() -> PermutationSpec:
 def get_permuted_param(ps: PermutationSpec, perm, key: str, params, except_axis=None):
   """Get parameter `k` from `params`, with the permutations applied."""
   w = params[key]
-  print("w shape:", w.shape)
   for axis, p in enumerate(ps.axes_to_perm[key]):
     # Skip the axis we're trying to permute.
     if axis == except_axis:
@@ -197,15 +196,14 @@ def get_scaled_permuted_param(ps: PermutationSpec, perm, scale, key: str, params
     # Skip the axis we're trying to permute.
     if axis == except_axis:
       continue
-
+    w = jnp.squeeze(w)
     # None indicates that there is no permutation relevant to that axis.
     if p is not None:
       w = jnp.take(w, perm[p], axis=axis)
-      w = jnp.squeeze(w)
-      if axis == 1:
-          w = scale[p].flatten() * w
+      if axis == 0:
+        w = scale[p][:,np.newaxis] * w
       else:
-        w = (w.T * scale[p]).T
+        w = w * scale[p][np.newaxis,:]
 
   return w
 
@@ -225,10 +223,14 @@ def weight_matching(rng,
                     params_a,
                     params_b,
                     max_iter=100,
+                    use_scales=False,
                     init_perm=None,
                     silent=False):
   """Find a permutation of `params_b` to make them match `params_a`."""
   
+  # for weight_label, weights in params_a.items():
+  #   print("weight label, weight shape: ", weight_label, weights.shape)
+    
   # dictionary of sizes, key = "P0", "P1", "P2", value = size of layer      
   perm_sizes = {p: params_a[axes[0][0]].shape[axes[0][1]] for p, axes in ps.perm_to_axes.items()}
   
@@ -239,22 +241,6 @@ def weight_matching(rng,
   # list of layer labels
   perm_names = list(perm.keys())
 
-  # ps.perm_to_axes is a dict of layer labels mapping to a list of weight labels.. 
-  # (each layer has weights, biases, and weights to next layer)
-  # print(ps.perm_to_axes)
-  
-  # Sally's additions
-  # for layer in perm_names:
-  #   print("layer is: ", layer)
-  #   for weights_type, axis in ps.perm_to_axes[layer]:
-  #     w_a = params_a[weights_type]
-  #     w_b = params_b[weights_type]
-  #     a_norm = np.linalg.norm(w_a)
-  #     b_norm = np.linalg.norm(w_b)
-  #     normalization = a_norm/b_norm
-  #     print("weights type is: ", weights_type)
-  #     print("model a norm: ", a_norm, "model b norm:", b_norm)
-  
   for iteration in range(max_iter):
     progress = False
     for p_ix in random.permutation(rngmix(rng, iteration), len(perm_names)):
@@ -263,33 +249,41 @@ def weight_matching(rng,
       A = jnp.zeros((n, n))
       for wk, axis in ps.perm_to_axes[p]: 
         # wk is: Dense0/kernel, Dense1/kernel, Dense0/bias, 
-        # axis is 0 or 1 (unclear what it means)
+        # axis is 0 or 1
         w_a = params_a[wk]
-        # w_b = get_permuted_param(ps, perm, wk, params_b, except_axis=axis)
-        w_b = get_scaled_permuted_param(ps, perm, scale, wk, params_b, except_axis=axis)        
-        # a_norm = np.linalg.norm(w_a)
-        # b_norm = np.linalg.norm(w_b)
-        # w_b = w_b * (a_norm / b_norm)
-      
-        w_a = jnp.moveaxis(w_a, axis, 0).reshape((n, -1))
+        if use_scales:
+          w_b = get_scaled_permuted_param(ps, perm, scale, wk, params_b, except_axis=axis)
+        else:
+          w_b = get_permuted_param(ps, perm, wk, params_b, except_axis=axis)
+        
+        w_a = jnp.moveaxis(w_a, axis, 0).reshape((n, -1)) #taking a transpose if axis=1
         w_b = jnp.moveaxis(w_b, axis, 0).reshape((n, -1))
         A += w_a @ w_b.T
 
       # print(jnp.min(A))
-      A = relu(A)
+      if use_scales:
+        A = relu(A)
       print(jnp.min(A))
       ri, ci = linear_sum_assignment(A, maximize=True)
       assert (ri == jnp.arange(len(ri))).all()
 
-      oldL = jnp.vdot(A, jnp.eye(n)[perm[p]])
-      newL = jnp.vdot(A, jnp.eye(n)[ci, :])
-      if not silent: print(f"{iteration}/{p}: {newL - oldL}")
+      # new_scale = jnp.array([epsilon if A[ci[i], i] <= 0 else 1 for i in range(n)])
+      # print("!!", len([A[i, ci[i]] for i in range(n)]), min([A[i, ci[i]] for i in range(n)]))
+      new_scale = jnp.array([1./epsilon if A[i, ci[i]] <= 1e-5 else 1 for i in range(n)])
+      
+      if use_scales:
+        oldL = jnp.vdot(A, scale[p] * jnp.eye(n)[perm[p]])
+        newL = jnp.vdot(A, new_scale * jnp.eye(n)[ci, :])
+      else:
+        oldL = jnp.vdot(A, jnp.eye(n)[perm[p]])
+        newL = jnp.vdot(A, jnp.eye(n)[ci, :])
+      if not silent: print(f"old {iteration}/{p}: {newL - oldL}")
       progress = progress or newL > oldL + 1e-12
 
+      # print("sample of entry: ", A[0, ci[0]], ci[0])
+      # automatically guarantees that newL >= oldL by definition
       perm[p] = jnp.array(ci)
-      print("!!", len([A[i, ci[i]] for i in range(n)]), min([A[i, ci[i]] for i in range(n)]))
-      scale[p] = jnp.array([1./epsilon if A[i, ci[i]] <= 1e-5 else 1 for i in range(n)])
-
+      scale[p] = new_scale
     if not progress:
       break
 
