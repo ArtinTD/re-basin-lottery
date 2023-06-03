@@ -281,7 +281,7 @@ def weight_matching(rng,
       progress = progress or newL > oldL + 1e-12
 
       # print("sample of entry: ", A[0, ci[0]], ci[0])
-      
+      # automatically guarantees that newL >= oldL by definition
       perm[p] = jnp.array(ci)
       scale[p] = new_scale
     if not progress:

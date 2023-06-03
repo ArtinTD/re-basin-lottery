@@ -54,43 +54,40 @@ def apply_permutation_new(ps: PermutationSpec, final_permutation, model_params):
   # return {key: get_permuted_param(ps, final_permutation, key, model_params) for key in model_params.keys()}
   return {weight_label: get_permuted_param(ps, final_permutation, weight_label, weights) for weight_label, weights in model_params.items()}
  
-def find_norms(ps: PermutationSpec, params_a, params_b):
-  perm_sizes = {p: params_a[axes[0][0]].shape[axes[0][1]] for p, axes in ps.perm_to_axes.items()}
+def normalize(ps: PermutationSpec, params):
+  perm_sizes = {p: params[axes[0][0]].shape[axes[0][1]] for p, axes in ps.perm_to_axes.items()}
   # dictionary of permutations, key = layer label, value = permutation for the layer
   perm = {p: jnp.arange(n) for p, n in perm_sizes.items()}
   
-  a_norms = defaultdict(lambda : None) # dict with keys being the weight_labels, value being a vector indexed by neurons
-  b_norms = defaultdict(lambda : None)
+  norms = defaultdict(lambda : None) # dict with keys being the weight_labels, value being a vector indexed by neurons
   
   for layer_label in perm.keys(): #normalize at every layer at every neuron
     n = perm_sizes[layer_label]
-    a_norm = jnp.zeros(n)
-    b_norm = jnp.zeros(n)
+    norm = jnp.zeros(n)
     # for each layer_label e.g. P_0, find the weights and biases. what's the easiest way?
     # ps.perm_to_axes[P_0] gives (weight_0, _), (bias_0, _), (weight_1, _)
     for weight_label, axis in ps.perm_to_axes[layer_label]: 
-      w_a = params_a[weight_label]
-      w_b = params_b[weight_label]
+      w = params[weight_label]
       # print("layer label: ", layer_label, "weight label: ", weight_label, "axis: ", axis, "weight shape: ", w_a.shape)
-      if axis == 1 or (len(w_a.shape) == 1): # hacky way to get weight_0 and bias_0
-        w_a = w_a.reshape((-1, n)) #if the weight is the bias vector, turn into 1xn matrix
-        w_b = w_b.reshape((-1, n))
-        a_norm += np.linalg.norm(w_a, axis=0)**2 #compute norm for each column, output is a vector of column norms
-        b_norm += np.linalg.norm(w_b, axis=0)**2
+      if axis == 1 or (len(w.shape) == 1): # hacky way to get weight_0 and bias_0
+        w = w.reshape((-1, n)) #if the weight is the bias vector, turn into 1xn matrix
+        norm += np.linalg.norm(w, axis=0)**2 #compute norm for each column, output is a vector of column norms
         
     for weight_label, axis in ps.perm_to_axes[layer_label]:
-      w_a = params_a[weight_label] #need to get the dimension of the weights
-      if (axis == 1 or len(w_a.shape) == 1): #second part of the condition is extremely hacky way to get biases
-        a_norms[weight_label] = np.sqrt(a_norm)
-        b_norms[weight_label] = np.sqrt(b_norm)
-      # else:
-      #   a_norms[weight_label] = jnp.ones(n) #default no scaling (only relevant for final layer stuff)
-      #   b_norms[weight_label] = jnp.ones(n) #default no scaling  covered by defaultdict
-
-  # for weight_labels, norm in a_norms.items():
-  #   print(weight_labels, norm.shape)
-    
-  return a_norms, b_norms
+      w = params[weight_label] #need to get the dimension of the weights
+      if (axis == 1 or len(w.shape) == 1): #second part of the condition is extremely hacky way to get biases
+        norms[weight_label] = np.sqrt(norm)
+        
+  normed_params = {} 
+  for weight_label, w in params.items():
+    norm = norms[weight_label]
+    if norm is not None:
+      if len(w.shape) == 1: #weights are actually biases, indexed by neurons
+        w = w / norm
+      else: #weights are weights, divide by norms column-wise (columns are indexed by neurons at layer)
+        w = w / norm[np.newaxis,:]
+    normed_params[weight_label] = w
+  return normed_params
 
 def weight_matching_new(rng,
                     ps: PermutationSpec,
@@ -175,10 +172,8 @@ def test_weight_matching(seed=123):
   clever_b = apply_permutation(ps, perm, params_b)
   sim_old = sim(params_a, clever_b)
   
-  a_norms, b_norms = find_norms(ps, params_a, params_b)
-  #params_a = normalize(params_a, a_norms)
-  #params_b = normalize(params_b, b_norms)
-  
+  params_a = normalize(ps, params_a)
+  params_b = normalize(ps, params_b)
   perm_alt = weight_matching_new(rng, ps, params_a, params_b)
   clever_b_alt = apply_permutation_new(ps, perm_alt, params_b)
   sim_new = sim(params_a, clever_b_alt)
@@ -187,18 +182,6 @@ def test_weight_matching(seed=123):
   if (sim_old > sim_new):
     return 1
   return 0
-
-def normalize(params, norms):
-  normed_params = {}
-  for weight_label, w in params.items():
-    norm = norms[weight_label]
-    if norm is not None:
-      if len(w.shape) == 1: #weights are actually biases, indexed by neurons
-        w = w / norm
-      else: #weights are weights, divide by norms column-wise (columns are indexed by neurons at layer)
-        w = w / norm[np.newaxis,:]
-    normed_params[weight_label] = w
-  return normed_params
   
 def sim(params_a, params_b):
   sim = 0
@@ -209,7 +192,7 @@ def sim(params_a, params_b):
 
 if __name__ == "__main__":
   
-  test_once = True
+  test_once = False
   
   if test_once:
     test_weight_matching()
